@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Polygon JIT Strategy Monitor</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f8f9fa;
+        }
+        .card {
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            margin-bottom: 20px;
+        }
+        .card-header {
+            font-weight: bold;
+            background-color: #007bff;
+            color: white;
+            border-radius: 10px 10px 0 0 !important;
+        }
+        .metric-value {
+            font-size: 2rem;
+            font-weight: bold;
+            color: #0d6efd;
+        }
+        .stat-card {
+            transition: transform 0.3s ease;
+        }
+        .stat-card:hover {
+            transform: translateY(-5px);
+        }
+        .opportunity-item {
+            border-left: 4px solid #007bff;
+            margin-bottom: 10px;
+            padding: 10px;
+            background-color: #f8f9fa;
+            border-radius: 0 5px 5px 0;
+        }
+        .opportunity-item.jit {
+            border-left-color: #28a745;
+        }
+        .opportunity-item.arb {
+            border-left-color: #dc3545;
+        }
+        .opportunity-item.batch {
+            border-left-color: #fd7e14;
+        }
+        .profit {
+            font-weight: bold;
+            color: #28a745;
+        }
+        .header-title {
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+        }
+        .refresh-btn {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            z-index: 1000;
+        }
+    </style>
+</head>
+<body>
+    <div class="container-fluid mt-4">
+        <div class="row mb-4">
+            <div class="col-12">
+                <h1 class="text-center header-title">
+                    <img src="https://raw.githubusercontent.com/paradigmxyz/artemis/main/assets/artemis.png" alt="Artemis Logo" height="50">
+                    Polygon JIT Strategy Monitor
+                </h1>
+            </div>
+        </div>
+
+        <div class="row">
+            <!-- Profit Statistics -->
+            <div class="col-md-3">
+                <div class="card stat-card">
+                    <div class="card-header">Total Profit (USD)</div>
+                    <div class="card-body text-center">
+                        <div class="metric-value" id="total-profit">$0.00</div>
+                        <div class="text-muted" id="profit-detail">JIT: $0.00 | ARB: $0.00</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Gas Statistics -->
+            <div class="col-md-3">
+                <div class="card stat-card">
+                    <div class="card-header">Gas</div>
+                    <div class="card-body text-center">
+                        <div class="metric-value" id="gas-price">0 Gwei</div>
+                        <div class="text-muted" id="gas-used">Total: 0 MATIC</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Wallet Balance -->
+            <div class="col-md-3">
+                <div class="card stat-card">
+                    <div class="card-header">Wallet Balance</div>
+                    <div class="card-body text-center">
+                        <div class="metric-value" id="wallet-balance">0 MATIC</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Opportunity Statistics -->
+            <div class="col-md-3">
+                <div class="card stat-card">
+                    <div class="card-header">Opportunities</div>
+                    <div class="card-body text-center">
+                        <div class="metric-value" id="opportunities-detected">0</div>
+                        <div class="text-muted" id="opportunities-detail">Executed: 0 | Failed: 0</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="row mt-4">
+            <!-- Opportunity Chart -->
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">Profit Distribution</div>
+                    <div class="card-body">
+                        <canvas id="profitChart" height="250"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Transaction Chart -->
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">Transaction Performance</div>
+                    <div class="card-body">
+                        <canvas id="txChart" height="250"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="row mt-4">
+            <!-- Recent Opportunities Table -->
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-header">Recent Opportunities</div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-hover">
+                                <thead>
+                                    <tr>
+                                        <th>Time</th>
+                                        <th>Type</th>
+                                        <th>Pool</th>
+                                        <th>Est. Profit</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="opportunities-table">
+                                    <!-- JS will populate this -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <button id="refresh-btn" class="btn btn-primary refresh-btn">
+        <i class="bi bi-arrow-clockwise"></i> Refresh Data
+    </button>
+
+    <script>
+        // Chart objects
+        let profitChart;
+        let txChart;
+
+        // Initialize charts on load
+        document.addEventListener('DOMContentLoaded', function() {
+            initCharts();
+            fetchData();
+            
+            // Set up refresh timer
+            setInterval(fetchData, 5000);
+            
+            // Manual refresh button
+            document.getElementById('refresh-btn').addEventListener('click', fetchData);
+        });
+
+        function initCharts() {
+            // Profit distribution chart
+            const profitCtx = document.getElementById('profitChart').getContext('2d');
+            profitChart = new Chart(profitCtx, {
+                type: 'pie',
+                data: {
+                    labels: ['JIT Liquidity', 'Flash Arbitrage', 'Batch Micro-JIT'],
+                    datasets: [{
+                        data: [0, 0, 0],
+                        backgroundColor: ['#28a745', '#dc3545', '#fd7e14'],
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: {
+                            position: 'bottom',
+                        },
+                        title: {
+                            display: true,
+                            text: 'Profit by Strategy Type'
+                        }
+                    }
+                }
+            });
+
+            // Transaction performance chart
+            const txCtx = document.getElementById('txChart').getContext('2d');
+            txChart = new Chart(txCtx, {
+                type: 'bar',
+                data: {
+                    labels: ['Detected', 'Executed', 'Failed'],
+                    datasets: [{
+                        label: 'Transaction Counts',
+                        data: [0, 0, 0],
+                        backgroundColor: ['#0d6efd', '#28a745', '#dc3545'],
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        y: {
+                            beginAtZero: true
+                        }
+                    }
+                }
+            });
+        }
+
+        function fetchData() {
+            // Fetch statistics
+            fetch('/stats')
+                .then(response => response.json())
+                .then(data => updateStats(data))
+                .catch(error => console.error('Error fetching stats:', error));
+
+            // Fetch recent opportunities
+            fetch('/opportunities')
+                .then(response => response.json())
+                .then(data => updateOpportunities(data))
+                .catch(error => console.error('Error fetching opportunities:', error));
+        }
+
+        function updateStats(data) {
+            // Update metrics
+            document.getElementById('total-profit').textContent = `$${data.profit.total_usd.toFixed(2)}`;
+            document.getElementById('profit-detail').textContent = 
+                `JIT: $${data.profit.by_type.jit_liquidity.toFixed(2)} | ARB: $${data.profit.by_type.flash_arb.toFixed(2)} | Batch: $${data.profit.by_type.batch_micro_jit.toFixed(2)}`;
+            
+            document.getElementById('gas-price').textContent = `${data.current.gas_price_gwei.toFixed(1)} Gwei`;
+            // Convert wei to MATIC (1 MATIC = 10^18 wei)
+            const gasUsedMatic = data.gas.total_spent_wei / 1e18;
+            document.getElementById('gas-used').textContent = `Total: ${gasUsedMatic.toFixed(4)} MATIC`;
+            
+            document.getElementById('wallet-balance').textContent = `${data.current.wallet_balance_eth.toFixed(4)} MATIC`;
+            
+            document.getElementById('opportunities-detected').textContent = data.opportunities.detected;
+            document.getElementById('opportunities-detail').textContent = 
+                `Executed: ${data.opportunities.executed} | Failed: ${data.opportunities.failed}`;
+            
+            // Update profit chart
+            profitChart.data.datasets[0].data = [
+                data.profit.by_type.jit_liquidity,
+                data.profit.by_type.flash_arb,
+                data.profit.by_type.batch_micro_jit
+            ];
+            profitChart.update();
+            
+            // Update transaction chart
+            txChart.data.datasets[0].data = [
+                data.opportunities.detected,
+                data.opportunities.executed,
+                data.opportunities.failed
+            ];
+            txChart.update();
+        }
+
+        function updateOpportunities(opportunities) {
+            const tableBody = document.getElementById('opportunities-table');
+            tableBody.innerHTML = '';
+            
+            opportunities.forEach(opp => {
+                const row = document.createElement('tr');
+                
+                // Determine class based on opportunity type
+                if (opp.type.includes('JitLiquidity')) {
+                    row.classList.add('table-success');
+                } else if (opp.type.includes('FlashArbitrage')) {
+                    row.classList.add('table-danger');
+                } else if (opp.type.includes('BatchMicroJit')) {
+                    row.classList.add('table-warning');
+                }
+                
+                // Format time ago
+                const secondsAgo = opp.timestamp;
+                let timeAgo;
+                if (secondsAgo < 60) {
+                    timeAgo = `${secondsAgo}s ago`;
+                } else if (secondsAgo < 3600) {
+                    timeAgo = `${Math.floor(secondsAgo / 60)}m ago`;
+                } else {
+                    timeAgo = `${Math.floor(secondsAgo / 3600)}h ago`;
+                }
+                
+                row.innerHTML = `
+                    <td>${timeAgo}</td>
+                    <td>${opp.type}</td>
+                    <td>${opp.pool.substring(0, 10)}...</td>
+                    <td class="profit">$${opp.profit_usd.toFixed(2)}</td>
+                `;
+                
+                tableBody.appendChild(row);
+            });
+            
+            // If no opportunities, show message
+            if (opportunities.length === 0) {
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td colspan="4" class="text-center">No opportunities detected yet</td>
+                `;
+                tableBody.appendChild(row);
+            }
+        }
+    </script>
+</body>
+</html>

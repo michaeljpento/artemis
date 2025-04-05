@@ -1,0 +1,6 @@
+[submodule "crates/strategies/multi-strategy-flash/contracts/lib/openzeppelin-contracts"]
+	path = crates/strategies/multi-strategy-flash/contracts/lib/openzeppelin-contracts
+	url = https://github.com/OpenZeppelin/openzeppelin-contracts
+[submodule "crates/strategies/multi-strategy-flash/contracts/lib/forge-std"]
+	path = crates/strategies/multi-strategy-flash/contracts/lib/forge-std
+	url = https://github.com/foundry-rs/forge-std
