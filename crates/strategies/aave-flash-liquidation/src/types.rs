@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use ethers::{
-    prelude::{Address, Middleware, SignerMiddleware, U256, H256},
+    prelude::{Address, Middleware, SignerMiddleware, U256},
     signers::Signer,
 };
 use serde::{Deserialize, Serialize};
@@ -52,6 +52,7 @@ pub struct SwapRoute {
     pub dex_type: DexType,
     pub pool_address: Address,
     pub fee: Option<u32>,
+    pub path: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,6 +91,14 @@ pub struct Config {
     pub monitored_assets: Vec<Address>,
     pub supported_dexes: Vec<DexType>,
     pub flash_loan_config: FlashLoanConfig,
+    pub dex_configs: HashMap<DexType, DexConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DexConfig {
+    pub router_address: Address,
+    pub factory_address: Address,
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

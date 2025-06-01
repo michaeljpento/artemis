@@ -21,15 +21,18 @@ dependencies = [
  "anyhow",
  "artemis-core",
  "async-trait",
+ "chrono",
  "enum_dispatch",
  "ethers",
  "futures",
+ "hex",
  "serde",
  "serde_json",
  "strum 0.24.1",
  "strum_macros 0.24.3",
  "thiserror 1.0.40",
  "tokio",
+ "tokio-stream",
  "tracing",
 ]
 

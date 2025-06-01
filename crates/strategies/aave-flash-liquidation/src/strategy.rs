@@ -215,19 +215,51 @@ impl<M: Middleware + 'static, S: Signer + 'static> AaveFlashLiquidationStrategy<
 
     async fn find_uniswap_v2_route(
         &self,
-        _token_in: Address,
-        _token_out: Address,
-        _amount_in: U256,
+        token_in: Address,
+        token_out: Address,
+        amount_in: U256,
     ) -> Option<SwapRoute> {
-        None
+        let dex_config = self.config.dex_configs.get(&DexType::UniswapV2)?;
+        
+        Some(SwapRoute {
+            dex_type: DexType::UniswapV2,
+            token_in,
+            token_out,
+            amount_in,
+            min_amount_out: amount_in.mul(U256::from(95)).div(U256::from(100)),
+            pool_address: dex_config.router_address,
+            path: vec![format!("{:?}", token_in), format!("{:?}", token_out)],
+            fee: None,
+        })
     }
 
     async fn find_uniswap_v3_route(
         &self,
+        token_in: Address,
+        token_out: Address,
+        amount_in: U256,
+    ) -> Option<SwapRoute> {
+        let dex_config = self.config.dex_configs.get(&DexType::UniswapV3)?;
+        
+        Some(SwapRoute {
+            dex_type: DexType::UniswapV3,
+            token_in,
+            token_out,
+            amount_in,
+            min_amount_out: amount_in.mul(U256::from(97)).div(U256::from(100)),
+            pool_address: dex_config.router_address,
+            path: vec![format!("{:?}", token_in), format!("{:?}", token_out)],
+            fee: Some(3000u32),
+        })
+    }
+
+    async fn estimate_uniswap_v3_output(
+        &self,
         _token_in: Address,
         _token_out: Address,
         _amount_in: U256,
-    ) -> Option<SwapRoute> {
+        _fee: u32,
+    ) -> Option<U256> {
         None
     }
 
@@ -257,13 +289,13 @@ impl<M: Middleware + 'static, S: Signer + 'static> AaveFlashLiquidationStrategy<
     }
 
     async fn get_user_health_factor(&self, user: Address) -> Option<U256> {
-        match self.liquidator_contract
-            .method::<_, U256>("getUserHealthFactor", user)
+        match self.aave_pool
+            .method::<_, (U256, U256, U256, U256, U256, U256)>("getUserAccountData", user)
             .unwrap()
             .call()
             .await
         {
-            Ok(health_factor) => Some(health_factor),
+            Ok((_, _, _, _, _, health_factor)) => Some(health_factor),
             Err(e) => {
                 warn!("Failed to get health factor for user {}: {}", user, e);
                 None
@@ -272,28 +304,24 @@ impl<M: Middleware + 'static, S: Signer + 'static> AaveFlashLiquidationStrategy<
     }
 
     async fn is_user_liquidatable(&self, user: Address) -> bool {
-        match self.liquidator_contract
-            .method::<_, bool>("isLiquidatable", user)
-            .unwrap()
-            .call()
-            .await
-        {
-            Ok(liquidatable) => liquidatable,
-            Err(e) => {
-                warn!("Failed to check if user {} is liquidatable: {}", user, e);
-                false
-            }
+        if let Some(health_factor) = self.get_user_health_factor(user).await {
+            health_factor < U256::from(10).pow(18.into())
+        } else {
+            false
         }
     }
 
     async fn get_liquidation_bonus(&self, asset: Address) -> Option<U256> {
-        match self.liquidator_contract
-            .method::<_, U256>("getLiquidationBonus", asset)
+        match self.aave_pool
+            .method::<_, U256>("getConfiguration", asset)
             .unwrap()
             .call()
             .await
         {
-            Ok(bonus) => Some(bonus),
+            Ok(config) => {
+                let liquidation_bonus = (config >> 16) & U256::from(0xFFFF);
+                Some(liquidation_bonus)
+            }
             Err(e) => {
                 warn!("Failed to get liquidation bonus for asset {}: {}", asset, e);
                 None
@@ -305,21 +333,47 @@ impl<M: Middleware + 'static, S: Signer + 'static> AaveFlashLiquidationStrategy<
         &self,
         collateral_asset: Address,
         debt_asset: Address,
-        user: Address,
+        _user: Address,
         debt_to_cover: U256,
     ) -> Option<U256> {
-        match self.liquidator_contract
-            .method::<_, U256>(
-                "calculateExpectedProfit",
-                (collateral_asset, debt_asset, user, debt_to_cover),
-            )
+        let liquidation_bonus = self.get_liquidation_bonus(collateral_asset).await?;
+        let collateral_price = self.get_asset_price(collateral_asset).await?;
+        let debt_price = self.get_asset_price(debt_asset).await?;
+        
+        let max_liquidation_amount = debt_to_cover.min(
+            debt_to_cover.mul(U256::from(5000)).div(U256::from(10000))
+        );
+        
+        let collateral_amount = max_liquidation_amount
+            .mul(debt_price)
+            .div(collateral_price)
+            .mul(liquidation_bonus)
+            .div(U256::from(10000));
+        
+        let profit_wei = collateral_amount
+            .mul(collateral_price)
+            .div(U256::from(10).pow(18.into()))
+            .saturating_sub(max_liquidation_amount.mul(debt_price).div(U256::from(10).pow(18.into())));
+        
+        let gas_cost = U256::from((self.estimate_gas_cost().await * 1e18) as u64);
+        
+        if profit_wei > gas_cost {
+            Some(profit_wei.saturating_sub(gas_cost))
+        } else {
+            None
+        }
+    }
+
+    async fn get_asset_price(&self, asset: Address) -> Option<U256> {
+        match self.aave_oracle
+            .method::<_, U256>("getAssetPrice", asset)
             .unwrap()
             .call()
             .await
         {
-            Ok(profit) => Some(profit),
+            Ok(price) => Some(price),
             Err(e) => {
-                warn!("Failed to calculate expected profit: {}", e);
+                warn!("Failed to get asset price for {}: {}", asset, e);
                 None
             }
         }
@@ -464,7 +518,7 @@ impl<M: Middleware + 'static, S: Signer + 'static> AaveFlashLiquidationStrategy<
         None
     }
 
-    async fn create_liquidation_target(&self, user: Address, _debt_asset: Address) -> Option<LiquidationTarget> {
+    async fn create_liquidation_target(&self, user: Address, debt_asset: Address) -> Option<LiquidationTarget> {
         if !self.is_user_liquidatable(user).await {
             return None;
         }
@@ -475,10 +529,102 @@ impl<M: Middleware + 'static, S: Signer + 'static> AaveFlashLiquidationStrategy<
             return None;
         }
 
-        None
+        let _user_data = self.get_user_account_data(user).await?;
+        let collateral_asset = self.find_best_collateral_asset(user).await?;
+        let liquidation_bonus = self.get_liquidation_bonus(collateral_asset).await?;
+        
+        let max_debt_to_cover = self.calculate_max_liquidation_amount(user, debt_asset).await?;
+        let debt_to_cover = max_debt_to_cover.min(self.config.max_liquidation_amount);
+        
+        let gas_cost_estimate = self.estimate_gas_cost().await;
+        let expected_profit = self.calculate_liquidation_profit(
+            collateral_asset,
+            debt_asset,
+            debt_to_cover,
+            liquidation_bonus
+        ).await?;
+
+        Some(LiquidationTarget {
+            user,
+            collateral_asset,
+            debt_asset,
+            debt_to_cover,
+            health_factor,
+            liquidation_bonus,
+            expected_profit,
+            gas_cost_estimate: U256::from((gas_cost_estimate * 1e18) as u64),
+            receive_a_token: false,
+        })
     }
 
-    async fn calculate_flash_loan_fee(&self, amount: U256, asset: Address) -> f64 {
+    async fn get_user_account_data(&self, user: Address) -> Option<AaveUserData> {
+        match self.aave_pool
+            .method::<_, (U256, U256, U256, U256, U256, U256)>("getUserAccountData", user)
+            .unwrap()
+            .call()
+            .await
+        {
+            Ok((total_collateral_eth, total_debt_eth, available_borrows_eth, 
+                current_liquidation_threshold, ltv, health_factor)) => {
+                Some(AaveUserData {
+                    total_collateral_eth,
+                    total_debt_eth,
+                    available_borrows_eth,
+                    current_liquidation_threshold,
+                    ltv,
+                    health_factor,
+                })
+            }
+            Err(e) => {
+                warn!("Failed to get user account data for {}: {}", user, e);
+                None
+            }
+        }
+    }
+
+    async fn find_best_collateral_asset(&self, _user: Address) -> Option<Address> {
+        self.config.monitored_assets.first().copied()
+    }
+
+    async fn calculate_max_liquidation_amount(&self, user: Address, _debt_asset: Address) -> Option<U256> {
+        if let Some(user_data) = self.get_user_account_data(user).await {
+            let max_liquidation = user_data.total_debt_eth
+                .mul(U256::from(5000))
+                .div(U256::from(10000));
+            Some(max_liquidation.min(self.config.max_liquidation_amount))
+        } else {
+            None
+        }
+    }
+
+    async fn calculate_liquidation_profit(
+        &self,
+        collateral_asset: Address,
+        debt_asset: Address,
+        debt_to_cover: U256,
+        liquidation_bonus: U256,
+    ) -> Option<f64> {
+        let collateral_price = self.get_asset_price(collateral_asset).await?;
+        let debt_price = self.get_asset_price(debt_asset).await?;
+        
+        let collateral_amount = debt_to_cover
+            .mul(debt_price)
+            .div(collateral_price)
+            .mul(liquidation_bonus)
+            .div(U256::from(10000));
+        
+        let profit_wei = collateral_amount
+            .mul(collateral_price)
+            .div(U256::from(10).pow(18.into()))
+            .saturating_sub(debt_to_cover.mul(debt_price).div(U256::from(10).pow(18.into())));
+        
+        match format_units(profit_wei, 18) {
+            Ok(profit_str) => profit_str.parse::<f64>().ok(),
+            Err(_) => None,
+        }
+    }
+
+    async fn calculate_flash_loan_fee(&self, amount: U256, _asset: Address) -> f64 {
         let fee_rate = self.get_flash_loan_fee_rate(&self.config.flash_loan_config.preferred_provider);
         let fee_wei = amount.mul(fee_rate).div(U256::from(10000));
         

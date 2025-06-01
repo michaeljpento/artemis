@@ -8,6 +8,7 @@ artemis-core = { path = "../../artemis-core" }
 thiserror = "1.0"
 tracing = "0.1"
 tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 ethers = "2.0"
@@ -19,6 +20,8 @@ strum_macros = "0.24"
 alloy-primitives = "0.7"
 alloy-sol-types = "0.7"
 anyhow = "1.0"
+hex = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
 
 [lib]
 name = "aave_flash_liquidation"
