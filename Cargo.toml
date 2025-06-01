@@ -7,6 +7,7 @@ members = [
     "crates/strategies/*",
     "crates/clients/*", 
     "examples/*", "polygon-jit-strategy",
+    "crates/strategies/aave-flash-liquidation",
 ]
 
 default-members = ["bin/artemis", "bin/cli"]
